@@ -1,0 +1,128 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>WaitLess · Live hospital queues</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script></head>
+<body><div class="app"><section class="panel">
+<header class="top"><div><h1>WaitLess</h1><p class="sub">Live hospital queues near you</p></div><a class="ghost" href="/login">Staff</a></header>
+<div class="seg" role="group" aria-label="Visit type">
+  <button id="m-regular" aria-pressed="true" onclick="setMode('regular')">Regular visit</button>
+  <button id="m-em" aria-pressed="false" onclick="setMode('emergency')">Emergency</button></div>
+<div id="emBanner" class="banner" hidden>Life-threatening? Call <a href="tel:1122">1122</a> now. The nearest emergency departments are listed first.</div>
+<div><input id="q" type="search" placeholder="Search hospitals" aria-label="Search hospitals" oninput="S.q=this.value;render(true)">
+  <div class="chips" role="group" aria-label="Sort hospitals">
+    <button data-s="total" onclick="setSort('total')">Fastest overall</button>
+    <button data-s="km" onclick="setSort('km')">Nearest</button>
+    <button data-s="queue" onclick="setSort('queue')">Shortest queue</button></div></div>
+<div class="loc"><span id="loc">Locating you…</span><button class="ghost" onclick="locate()">Use my location</button></div>
+<div id="token"></div>
+<div id="list"><p class="meta">Finding hospitals…</p></div>
+<p class="meta">Tip: drag the blue dot or tap the map to set where you are. Tap a price-tag marker to select a hospital.</p>
+</section><section class="mapwrap"><div id="map" role="region" aria-label="Map of nearby hospitals"></div></section></div>
+<dialog id="dlg"></dialog><div id="toasts" aria-live="polite"></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ord=n=>{const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0])};
+const S={pos:{lat:33.9946,lng:72.9333},mode:'regular',sort:'total',q:'',hs:[],prev:{},sel:null,notified:false,offline:false,fit:true};
+async function api(url,body){const r=await fetch(url,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
+  const j=await r.json();if(!r.ok)throw new Error(j.error||'Request failed');return j}
+function toast(m,k=''){const t=document.createElement('div');t.className='toast '+k;t.textContent=m;$('toasts').append(t);setTimeout(()=>t.remove(),4500)}
+
+/* ---- map ---- */
+let map=null,markers={},route=null,me=null;
+if(window.L){
+  map=L.map('map').setView([S.pos.lat,S.pos.lng],12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+  me=L.marker([S.pos.lat,S.pos.lng],{draggable:true,zIndexOffset:1000,title:'You are here',
+    icon:L.divIcon({className:'',html:'<div class="me"></div>',iconSize:[18,18]})}).addTo(map);
+  me.on('dragend',()=>{const p=me.getLatLng();setPos(p.lat,p.lng,'Location set on the map')});
+  map.on('click',e=>{me.setLatLng(e.latlng);setPos(e.latlng.lat,e.latlng.lng,'Location set on the map')});
+}else{$('map').innerHTML='<p class="meta" style="padding:20px">The map needs an internet connection. Hospital cards still work.</p>'}
+const icon=h=>L.divIcon({className:'',html:`<div class="mk ${h.level} ${S.sel==h.id?'sel':''}">${h.wait_min}m</div>`,iconSize:[48,28],iconAnchor:[24,14]});
+function updateMap(){if(!map)return;
+  S.hs.forEach(h=>{if(markers[h.id])markers[h.id].setIcon(icon(h));
+    else markers[h.id]=L.marker([h.lat,h.lng],{icon:icon(h),title:h.name}).addTo(map).on('click',()=>select(h.id,true))});
+  Object.keys(markers).forEach(id=>{if(!S.hs.find(h=>h.id==id)){markers[id].remove();delete markers[id]}});
+  if(S.fit&&S.hs.length&&!S.sel){map.fitBounds(L.latLngBounds([[S.pos.lat,S.pos.lng],...S.hs.map(h=>[h.lat,h.lng])]).pad(.25));S.fit=false}}
+function drawRoute(){if(!map)return;if(route){route.remove();route=null}
+  const h=S.hs.find(x=>x.id==S.sel);if(!h)return;
+  route=L.polyline([[S.pos.lat,S.pos.lng],[h.lat,h.lng]],{color:getComputedStyle(document.body).getPropertyValue('--accent').trim(),dashArray:'6 8',weight:3}).addTo(map);
+  map.fitBounds(route.getBounds().pad(.5))}
+function select(id,scroll){S.sel=id;render(true);updateMap();drawRoute();
+  if(scroll)document.querySelector(`[data-id="${id}"]`)?.scrollIntoView({block:'nearest',behavior:'smooth'})}
+function setPos(lat,lng,msg){S.pos={lat,lng};$('loc').textContent=msg;load(true)}
+function locate(){$('loc').textContent='Locating you…';
+  navigator.geolocation?.getCurrentPosition(p=>{const{latitude:a,longitude:b}=p.coords;me?.setLatLng([a,b]);S.fit=true;S.sel=null;setPos(a,b,'Using your current location')},
+    ()=>{$('loc').textContent='Location unavailable. Tap the map to set where you are.';toast('Location blocked. Tap the map instead.','warn')},{timeout:6000})}
+
+/* ---- modes, sort, list ---- */
+function setMode(m){S.mode=m;const em=m=='emergency';document.body.classList.toggle('em',em);
+  $('m-regular').setAttribute('aria-pressed',!em);$('m-em').setAttribute('aria-pressed',em);$('emBanner').hidden=!em;
+  S.sort=em?'km':'total';S.sel=null;S.fit=true;markSort();load(true)}
+function setSort(s){S.sort=s;markSort();render(true)}
+function markSort(){document.querySelectorAll('.chips button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.s==S.sort))}
+const view=()=>{const k={total:'total_min',km:'km',queue:'queue'}[S.sort];
+  return S.hs.filter(h=>h.name.toLowerCase().includes(S.q.toLowerCase())).sort((a,b)=>a[k]-b[k]||a.km-b.km)};
+const dots=(n)=>{const m=Math.min(n,24);return `<div class="dots" aria-hidden="true">${'<i></i>'.repeat(m)}${n>m?`<em>+${n-m}</em>`:''}</div>`};
+function render(force){
+  if(!force&&($('dlg').open||$('list').contains(document.activeElement)&&document.activeElement.tagName!='BODY'))return;
+  const em=S.mode=='emergency',v=view();
+  $('list').innerHTML=v.map((h,i)=>`<article class="hc ${h.level} ${S.sel==h.id?'sel':''}" data-id="${h.id}" tabindex="0" onclick="select(${h.id})" onkeydown="if(event.key=='Enter'&&event.target==this)select(${h.id})">
+    <div class="row"><div><div class="name">${esc(h.name)} ${i==0&&!S.q?`<span class="pill">${em?'Closest ER':'Best now'}</span>`:''}</div>
+    <div class="meta">${h.km} km · ${h.travel_min} min drive · ${h.has_er?'Emergency dept.':'Clinic only'}</div></div>
+    <div class="wait"><b class="${h.d?'flash':''}">${h.wait_min}</b><small>min wait ${h.d>0?'<span class="up">▲</span>':h.d<0?'<span class="down">▼</span>':''}</small></div></div>
+    ${dots(h.queue)}
+    <div class="row"><span class="pill">${h.queue} in queue</span><span>
+      <a class="ghost" target="_blank" rel="noopener" onclick="event.stopPropagation()" href="https://www.google.com/maps/dir/?api=1&origin=${S.pos.lat},${S.pos.lng}&destination=${h.lat},${h.lng}">Directions</a>
+      <button class="act" onclick="event.stopPropagation();openDlg(${h.id})">${em?"I'm coming":'Reserve'}</button></span></div></article>`).join('')
+    ||`<p class="meta">No hospitals match. Clear the search${em?' or switch to Regular visit':''}.</p>`}
+async function load(force){
+  try{const hs=await api(`/api/hospitals?lat=${S.pos.lat}&lng=${S.pos.lng}&mode=${S.mode}`);
+    hs.forEach(h=>{h.d=S.prev[h.id]==null?0:Math.sign(h.queue-S.prev[h.id]);S.prev[h.id]=h.queue});
+    S.hs=hs;S.offline=false;render(force);updateMap();if(S.sel)drawRoute()}
+  catch(e){if(!S.offline)toast('Cannot reach the server. Retrying…','warn');S.offline=true}}
+
+/* ---- reserve / emergency dialog ---- */
+function openDlg(id){const h=S.hs.find(x=>x.id==id),em=S.mode=='emergency',u=JSON.parse(localStorage.me||'{}');
+  $('dlg').innerHTML=`<h2>${em?'Tell '+esc(h.name)+' you are coming':'Reserve at '+esc(h.name)}</h2>
+  <p class="meta">${em?'The emergency team will see your name and arrival time.':`${h.queue} people in the queue, about ${h.wait_min} min wait. Your number expires if you have not arrived within 30 minutes.`}</p>
+  <label>Your name<input id="fn" value="${esc(u.name||'')}" autocomplete="name"></label>
+  <label>Phone number<input id="fp" value="${esc(u.phone||'')}" inputmode="tel" autocomplete="tel"></label>
+  ${em?`<label>Arriving in (minutes)<input id="fe" type="number" min="1" value="${Math.max(1,h.travel_min)}"></label>`:''}
+  <p id="fer" class="err" role="alert"></p>
+  <div class="row"><button class="ghost" onclick="$('dlg').close()">Cancel</button>
+  <button class="act" id="go" onclick="submitDlg(${id})">${em?'Send alert':'Reserve my number'}</button></div>`;
+  $('dlg').showModal();$('fn').focus()}
+async function submitDlg(id){const name=$('fn').value.trim(),phone=$('fp').value.trim();$('go').disabled=true;$('fer').textContent='';
+  try{localStorage.me=JSON.stringify({name,phone});
+    if(S.mode=='emergency'){const r=await api('/api/emergency',{hospital_id:id,name,phone,eta_min:+$('fe').value||0});
+      $('dlg').close();toast(`${r.hospital} knows you are on the way. Open Directions to navigate.`,'ok')}
+    else{const r=await api('/api/reserve',{hospital_id:id,name,phone});localStorage.tid=r.id;delete localStorage.start;S.notified=false;
+      $('dlg').close();toast(`You are #${r.number}. We will alert you when your turn is near.`,'ok');
+      if('Notification' in window&&Notification.permission=='default')Notification.requestPermission();poll()}
+    load(true)}catch(e){$('fer').textContent=e.message}finally{$('go').disabled=false}}
+
+/* ---- live ticket ---- */
+async function cancelTok(){if(!confirm('Cancel your reservation?'))return;await api(`/api/token/${localStorage.tid}/cancel`,{});delete localStorage.tid;poll();load(true)}
+async function poll(){
+  if(!localStorage.tid){$('token').innerHTML='';return}
+  try{const t=await api('/api/token/'+localStorage.tid);
+    if(t.status=='waiting'){
+      if(!localStorage.start)localStorage.start=t.position;
+      const st=+localStorage.start,prog=st>1?(st-t.position)/(st-1):0,C=2*Math.PI*34;
+      $('token').innerHTML=`<div class="ticket ${t.position<=2?'near':''}">
+        <svg class="ring" viewBox="0 0 80 80" role="img" aria-label="Progress in line"><circle class="bg" cx="40" cy="40" r="34"/>
+        <circle class="fg" cx="40" cy="40" r="34" stroke-dasharray="${C}" stroke-dashoffset="${C*(1-Math.max(.06,prog))}"/><text x="40" y="46">#${t.number}</text></svg>
+        <div><div class="name">${esc(t.hospital)}</div><div class="line">${t.position==1?"You're next":ord(t.position)+' in line'}</div>
+        <div class="meta">About ${t.eta_min} min · expires in ${t.expires_in_min} min</div></div>
+        <button class="ghost" onclick="cancelTok()">Cancel</button></div>`;
+      if(t.position<=2&&!S.notified){S.notified=true;const m=t.position==1?`You are next at ${t.hospital}. Head to the counter.`:`Almost your turn at ${t.hospital}.`;
+        toast(m,'ok');navigator.vibrate?.([200,100,200]);
+        if('Notification' in window&&Notification.permission=='granted')new Notification('WaitLess',{body:m})}
+    }else{const m={served:'Your turn has been called. Please go to the counter.',expired:'Your reservation expired. You can reserve again.',cancelled:'Reservation cancelled.'}[t.status];
+      toast(m,t.status=='served'?'ok':'warn');delete localStorage.tid;$('token').innerHTML=''}
+  }catch(e){delete localStorage.tid;$('token').innerHTML=''}}
+
+markSort();locate();load(true);poll();setInterval(load,4000);setInterval(poll,3000);
+</script></body></html>

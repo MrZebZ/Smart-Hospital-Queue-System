@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Staff login</title>
+<link rel="stylesheet" href="/static/style.css"></head><body><main style="max-width:420px">
+<h1>Hospital staff login</h1>
+<p class="sub">Sign in to manage your hospital's queue.</p>
+<div class="card">
+  <label for="u">Username</label><br><input id="u" autocomplete="username" style="width:100%;margin:4px 0 12px"><br>
+  <label for="p">Password</label><br><input id="p" type="password" autocomplete="current-password" style="width:100%;margin:4px 0 12px"><br>
+  <button class="act" onclick="go()">Sign in</button>
+  <p id="e" class="err" role="alert"></p>
+</div>
+<p class="meta">Demo accounts: hospital1 to hospital5, password demo123.</p>
+<p class="sub"><a href="/">Back to patient app</a></p></main>
+<script>
+const $=id=>document.getElementById(id);
+async function go(){const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({username:$('u').value.trim(),password:$('p').value})});
+  const j=await r.json(); if(r.ok) location='/dashboard'; else $('e').textContent=j.error;}
+document.addEventListener('keydown',e=>{if(e.key=='Enter')go()});
+</script></body></html>

@@ -1,0 +1,66 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Hospital dashboard</title>
+<link rel="stylesheet" href="/static/style.css"></head><body><div class="dash">
+<div class="row"><div><h1 id="title">Hospital dashboard</h1><p class="sub"><span id="live" class="dot"></span>Live · updates every 2 seconds</p></div>
+<div><button class="ghost" id="snd" onclick="toggleSound()">Sound on</button> <button class="ghost" onclick="logout()">Log out</button></div></div>
+<div id="alerts" style="margin-top:12px"></div>
+<div class="kpis">
+  <div class="kpi"><span class="meta">In waiting room</span><b id="k-cam">–</b></div>
+  <div class="kpi"><span class="meta">Reserved</span><b id="k-res">–</b></div>
+  <div class="kpi"><span class="meta">Estimated wait (min)</span><b id="k-wait">–</b></div>
+  <div class="kpi"><span class="meta">Now serving</span><b id="k-now">–</b></div></div>
+<div class="grid2"><div>
+  <div class="card"><div class="row"><h2>Waiting-room count</h2><span class="meta">Last 10 minutes</span></div><div id="chart"></div></div>
+  <div class="card"><h2>Camera count: <output id="camv">0</output></h2>
+    <input id="cam" type="range" min="0" max="40" value="0" aria-label="Camera count" oninput="$('camv').textContent=this.value" onchange="setCam()">
+    <p class="meta">The demo camera drifts on its own. A real people counter would send this value automatically.</p></div>
+  <div class="card"><h2>Minutes per patient: <output id="avgv">5</output></h2>
+    <input id="avg" type="range" min="1" max="30" value="5" aria-label="Minutes per patient" oninput="$('avgv').textContent=this.value" onchange="setAvg()">
+    <p class="meta">Patients see wait estimates based on this number.</p></div></div>
+<div class="card"><div class="row"><h2>Reserved patients</h2><button class="act" onclick="nextP()">Call next patient <kbd>N</kbd></button></div><div id="rows"></div></div></div>
+</div><div id="toasts" aria-live="polite"></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let HID=null,T=[],NOW='–',seen=null,sound=true,ac=null,hov=false;
+async function j(u,b){const r=await fetch(u,b===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  if(r.status==401){location='/login';throw 0}return r.json()}
+function toast(m){const t=document.createElement('div');t.className='toast ok';t.textContent=m;$('toasts').append(t);setTimeout(()=>t.remove(),4000)}
+function toggleSound(){sound=!sound;$('snd').textContent=sound?'Sound on':'Sound off';if(sound){ac=ac||new AudioContext();ac.resume()}}
+function beep(){if(!sound)return;try{ac=ac||new AudioContext();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=880;g.gain.value=.15;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.3)}catch(e){}}
+function drawChart(v){const el=$('chart');if(v.length<2){el.innerHTML='<p class="meta">Collecting data…</p>';return}
+  if(hov)return;const max=Math.max(...v,10),w=600,h=160,X=i=>i/(v.length-1)*w,Y=y=>h-6-y/max*(h-16);
+  const pts=v.map((y,i)=>X(i).toFixed(1)+','+Y(y).toFixed(1)).join(' ');
+  el.innerHTML=`<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="Waiting-room count over the last 10 minutes" style="touch-action:none">
+   <polygon points="0,${h} ${pts} ${w},${h}" style="fill:var(--soft)"/><polyline points="${pts}" fill="none" style="stroke:var(--accent);stroke-width:2.5"/>
+   <g id="hv" visibility="hidden"><line id="hl" y1="0" y2="${h}" style="stroke:var(--muted)"/><circle id="hc" r="5" style="fill:var(--accent)"/></g></svg>
+   <div id="tip" class="meta">Hover or touch the chart for exact counts.</div>`;
+  const svg=el.firstElementChild;svg.onpointerenter=()=>hov=true;svg.onpointerleave=()=>{hov=false;$('hv').setAttribute('visibility','hidden')};
+  svg.onpointermove=e=>{const r=svg.getBoundingClientRect(),i=Math.max(0,Math.min(v.length-1,Math.round((e.clientX-r.left)/r.width*(v.length-1))));
+    $('hv').setAttribute('visibility','visible');const x=X(i);$('hl').setAttribute('x1',x);$('hl').setAttribute('x2',x);$('hc').setAttribute('cx',x);$('hc').setAttribute('cy',Y(v[i]));
+    const s=(v.length-1-i)*4;$('tip').textContent=`${v[i]} people · ${s?Math.floor(s/60)+'m '+s%60+'s ago':'now'}`}}
+function tick(){document.querySelectorAll('.eta').forEach(e=>{const s=Math.round(+e.dataset.t-Date.now()/1000);e.textContent=s>0?`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`:'now'})}
+async function init(){const m=await j('/api/me');HID=m.hospital_id;$('title').textContent=m.hospital;refresh()}
+async function refresh(){
+  try{const d=await j('/api/dashboard/'+HID);$('live').className='dot';T=d.tokens;
+    $('k-cam').textContent=d.walk_in;$('k-res').textContent=T.length;$('k-wait').textContent=(d.walk_in+T.length)*d.avg_min;$('k-now').textContent=NOW;
+    if(document.activeElement!==$('cam')){$('cam').value=d.walk_in;$('camv').textContent=d.walk_in}
+    if(document.activeElement!==$('avg')){$('avg').value=d.avg_min;$('avgv').textContent=d.avg_min}
+    $('rows').innerHTML=T.map((t,i)=>{const age=(Date.now()/1000-t.created)/60;
+      return `<div class="qrow"><b>#${t.number}</b><div><div class="name">${esc(t.name)}</div><div class="meta">${esc(t.phone)} · reserved ${Math.floor(age)} min ago</div>
+      <div class="bar" title="Time left before the reservation expires"><i style="width:${Math.max(0,100-age/30*100)}%"></i></div></div>${i==0?'<span class="pill low">Next</span>':''}</div>`}).join('')
+      ||'<p class="meta">Nobody is waiting. New reservations appear here instantly.</p>';
+    const ids=new Set(d.alerts.map(a=>a.id));if(seen&&d.alerts.some(a=>!seen.has(a.id))){beep();toast('New emergency arrival')}seen=ids;
+    $('alerts').innerHTML=d.alerts.map(a=>`<div class="card alertc row"><div><div class="name">Emergency on the way: ${esc(a.name)}</div>
+      <div class="meta">${esc(a.phone)} · arriving in <b class="eta" data-t="${a.created+a.eta_min*60}"></b></div></div>
+      <button class="ghost" onclick="ack(${a.id})">Acknowledge</button></div>`).join('');tick();
+    drawChart(await j(`/api/dashboard/${HID}/history`))}
+  catch(e){$('live').className='dot off'}}
+async function nextP(){NOW=T.length?'#'+T[0].number:'Walk-in';await j(`/api/dashboard/${HID}/next`,{});toast(T.length?`Called #${T[0].number}`:'Walk-in patient called');refresh()}
+async function setCam(){await j(`/api/dashboard/${HID}/camera`,{count:+$('cam').value});refresh()}
+async function setAvg(){await j(`/api/dashboard/${HID}/service-time`,{avg_min:+$('avg').value});toast('Wait estimates updated')}
+async function ack(id){await j(`/api/alerts/${id}/ack`,{});refresh()}
+async function logout(){await j('/api/logout',{});location='/login'}
+document.addEventListener('keydown',e=>{if((e.key=='n'||e.key=='N')&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName))nextP()});
+init();setInterval(refresh,2000);setInterval(tick,1000);
+</script></body></html>

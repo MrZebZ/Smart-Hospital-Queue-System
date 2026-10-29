@@ -217,4 +217,4 @@ Released under the [MIT License](LICENSE).
 Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, rendered with [Leaflet](https://leafletjs.com/). Built with [Flask](https://flask.palletsprojects.com/).
 
 ## Author
-Your Name · [GitHub](https://github.com/YOUR_USERNAME) · course: App Development
+Mohsin Zeb · [GitHub](https://github.com/MrZebZ) · 
